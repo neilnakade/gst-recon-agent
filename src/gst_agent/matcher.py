@@ -16,7 +16,7 @@ import json
 import re
 from pathlib import Path
 
-from . import validate
+from . import gstr2b, validate
 
 TOLERANCE = 1.00  # rupees; ignore tiny rounding differences
 AMOUNT_FIELDS = ["taxable_value", "cgst", "sgst", "igst"]
@@ -88,8 +88,13 @@ def main() -> None:
     args = ap.parse_args()
 
     all_books = load_books(Path(args.extracted))
-    books, review = validate.split_books(all_books, args.buyer_gstin)  # doubtful ones are set aside
-    portal = json.loads(Path(args.portal).read_text())
+    portal, portal_info = gstr2b.load_portal(Path(args.portal))  # our simple list OR the official GSTR-2B structure
+    buyer_gstin = args.buyer_gstin or portal_info.get("buyer_gstin") or None  # an official file knows your GSTIN
+    books, review = validate.split_books(all_books, buyer_gstin)  # doubtful ones are set aside
+    if portal_info:
+        skipped = portal_info.get("skipped") or {}
+        print(f"\nRead official GSTR-2B: period {portal_info.get('period') or '?'}, "
+              f"{portal_info['invoices']} invoices; skipped (not matched): {skipped or 'nothing'}")
     outcome = reconcile(books, portal)
     outcome["needs_review"] = review
     Path(args.out).write_text(json.dumps(outcome, indent=2))

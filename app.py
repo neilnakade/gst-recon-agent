@@ -12,12 +12,15 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from src.gst_agent import emailer, extractor, matcher, report, validate
+from src.gst_agent import emailer, extractor, gstr2b, matcher, report, validate
 
 load_dotenv()
 st.set_page_config(page_title="GST Reconciliation Agent", layout="wide")
 st.title("GST Reconciliation Agent")
 st.caption("Match purchase invoices against GSTR-2B, find the differences, draft supplier follow-ups.")
+
+NO_KEY_MESSAGE = ("This feature is switched off in the public demo, which has no AI key. "
+                  "Run the app on your own computer with a free Gemini key in a .env file to use it.")
 
 LABEL_TO_FILL = {report.STATUS_LABEL[k]: v for k, v in report.STATUS_FILL.items()}
 
@@ -51,7 +54,7 @@ def get_uploaded() -> tuple[list[dict], list[dict]]:
         from google import genai
         key = os.getenv("GEMINI_API_KEY")
         if not key:
-            st.error("GEMINI_API_KEY not found in your .env file.")
+            st.info(NO_KEY_MESSAGE)
             st.stop()
         client = genai.Client(api_key=key)
         books, failed, bar = [], [], st.progress(0.0)
@@ -76,13 +79,26 @@ def get_uploaded() -> tuple[list[dict], list[dict]]:
     if not books or portal_file is None:
         st.info("Upload invoice PDFs and a GSTR-2B JSON file, then click 'Extract invoices'.")
         st.stop()
-    return books, json.load(portal_file)
+    try:
+        portal, info = gstr2b.parse_any(json.load(portal_file))
+    except (ValueError, json.JSONDecodeError) as e:
+        st.error(f"Could not read the GSTR-2B file: {e}")
+        st.stop()
+    if info:
+        st.session_state["portal_info"] = info
+    else:
+        st.session_state.pop("portal_info", None)
+    return books, portal
 
 
 books, portal = get_sample() if mode == "Sample data" else get_uploaded()
 
 # ---------------- Reconcile ----------------
-clean_books, review = validate.split_books(books, my_gstin or None)  # doubtful invoices are set aside
+portal_info = st.session_state.get("portal_info", {}) if mode == "Upload my own" else {}
+if portal_info.get("skipped"):
+    st.info("Official GSTR-2B read: " + f"{portal_info['invoices']} invoices matched against your books. "
+            "Not matched (not purchase invoices): " + ", ".join(f"{k} ({v})" for k, v in portal_info["skipped"].items()))
+clean_books, review = validate.split_books(books, my_gstin or portal_info.get("buyer_gstin") or None)  # doubtful invoices are set aside
 outcome = matcher.reconcile(clean_books, portal)
 outcome["needs_review"] = review
 results, extras = outcome["results"], outcome["extra_in_2b"]
@@ -152,7 +168,7 @@ with tab_mail:
         from google import genai
         key = os.getenv("GEMINI_API_KEY")
         if not key:
-            st.error("GEMINI_API_KEY not found in your .env file.")
+            st.info(NO_KEY_MESSAGE)
         else:
             client, ai = genai.Client(api_key=key), {}
             with st.spinner("Writing emails..."):
