@@ -6,7 +6,9 @@ Run from the repo root:
 import hmac
 import json
 import os
+import tempfile
 import time
+import uuid
 from pathlib import Path
 
 import pandas as pd
@@ -31,17 +33,14 @@ def get_secret(name: str):
         return None
 
 
-# Optional password gate for a private pilot copy: only active when APP_PASSWORD is set.
+# Optional pilot password: when APP_PASSWORD is set, the public sample stays open to everyone,
+# but uploading files and the AI features unlock only after the password is typed in the sidebar.
 APP_PASSWORD = get_secret("APP_PASSWORD")
-if APP_PASSWORD and not st.session_state.get("unlocked"):
-    typed = st.text_input("Password", type="password")
-    if typed:
-        if hmac.compare_digest(typed.encode(), str(APP_PASSWORD).encode()):
-            st.session_state["unlocked"] = True
-            st.rerun()
-        else:
-            st.error("Wrong password.")
-    st.stop()
+
+
+def ai_allowed() -> bool:
+    return not APP_PASSWORD or st.session_state.get("unlocked", False)
+
 
 MAX_INVOICES = int(get_secret("MAX_INVOICES") or 30)  # protects the API quota in a shared pilot
 
@@ -56,6 +55,17 @@ mode = st.sidebar.radio("Data", ["Sample data", "Upload my own"])
 my_gstin = st.sidebar.text_input("Your own GSTIN (optional)", "",
                                  help="Lets the safety net catch invoices where your details were read as the supplier's.")
 st.sidebar.caption("Sample data = the fake invoices made by synthetic.py. No real client data.")
+if APP_PASSWORD:
+    if st.session_state.get("unlocked"):
+        st.sidebar.success("Pilot features unlocked")
+    else:
+        typed = st.sidebar.text_input("Pilot password (unlocks upload and AI features)", type="password")
+        if typed:
+            if hmac.compare_digest(typed.encode(), str(APP_PASSWORD).encode()):
+                st.session_state["unlocked"] = True
+                st.rerun()
+            else:
+                st.sidebar.error("Wrong password.")
 
 
 # ---------------- Get books + portal ----------------
@@ -72,6 +82,9 @@ def get_sample() -> tuple[list[dict], list[dict]]:
 
 
 def get_uploaded() -> tuple[list[dict], list[dict]]:
+    if not ai_allowed():
+        st.info("Uploading your own files is locked in the public demo. Enter the pilot password in the sidebar.")
+        st.stop()
     pdfs = st.file_uploader("Purchase invoices (PDF)", type="pdf", accept_multiple_files=True)
     portal_file = st.file_uploader("GSTR-2B data (JSON)", type="json")
     st.caption("Extraction waits a few seconds per invoice to respect free-tier limits.")
@@ -193,7 +206,9 @@ with tab_mail:
     drafts = {s: emailer.template_email(s, f, company) for s, f in facts.items()}
     sources = {s: "template" for s in facts}
 
-    if st.button("Rewrite with AI (Gemini)", disabled=not facts):
+    if not ai_allowed():
+        st.caption("AI rewriting is locked in the public demo. Enter the pilot password in the sidebar.")
+    if st.button("Rewrite with AI (Gemini)", disabled=not facts or not ai_allowed()):
         from google import genai
         key = get_secret("GEMINI_API_KEY")
         if not key:
@@ -224,7 +239,11 @@ with tab_mail:
             st.text("Subject: " + e["subject"] + "\n\n" + e["body"])
 
 with tab_dl:
-    out = Path("output/gst_reconciliation_report.xlsx")
-    report.build_report(outcome, books_by_no, out)
-    st.download_button("Download Excel report", out.read_bytes(), file_name=out.name,
+    # A private temp file per run, deleted right away, so two people using the app at the
+    # same time can never overwrite or receive each other's report.
+    tmp = Path(tempfile.gettempdir()) / f"gst_report_{uuid.uuid4().hex}.xlsx"
+    report.build_report(outcome, books_by_no, tmp)
+    report_bytes = tmp.read_bytes()
+    tmp.unlink(missing_ok=True)
+    st.download_button("Download Excel report", report_bytes, file_name="gst_reconciliation_report.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
