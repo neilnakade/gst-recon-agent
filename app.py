@@ -3,6 +3,7 @@
 Run from the repo root:
     streamlit run app.py
 """
+import hmac
 import json
 import os
 import time
@@ -18,6 +19,31 @@ load_dotenv()
 st.set_page_config(page_title="GST Reconciliation Agent", layout="wide")
 st.title("GST Reconciliation Agent")
 st.caption("Match purchase invoices against GSTR-2B, find the differences, draft supplier follow-ups.")
+
+def get_secret(name: str):
+    """Look in environment variables / .env first, then in Streamlit's hosted secrets."""
+    value = os.getenv(name)
+    if value:
+        return value
+    try:
+        return st.secrets.get(name)
+    except Exception:
+        return None
+
+
+# Optional password gate for a private pilot copy: only active when APP_PASSWORD is set.
+APP_PASSWORD = get_secret("APP_PASSWORD")
+if APP_PASSWORD and not st.session_state.get("unlocked"):
+    typed = st.text_input("Password", type="password")
+    if typed:
+        if hmac.compare_digest(typed.encode(), str(APP_PASSWORD).encode()):
+            st.session_state["unlocked"] = True
+            st.rerun()
+        else:
+            st.error("Wrong password.")
+    st.stop()
+
+MAX_INVOICES = int(get_secret("MAX_INVOICES") or 30)  # protects the API quota in a shared pilot
 
 NO_KEY_MESSAGE = ("This feature is switched off in the public demo, which has no AI key. "
                   "Run the app on your own computer with a free Gemini key in a .env file to use it.")
@@ -52,10 +78,13 @@ def get_uploaded() -> tuple[list[dict], list[dict]]:
 
     if st.button("Extract invoices", disabled=not pdfs):
         from google import genai
-        key = os.getenv("GEMINI_API_KEY")
+        key = get_secret("GEMINI_API_KEY")
         if not key:
             st.info(NO_KEY_MESSAGE)
             st.stop()
+        if len(pdfs) > MAX_INVOICES:
+            st.warning(f"Only the first {MAX_INVOICES} invoices will be processed in this copy.")
+            pdfs = pdfs[:MAX_INVOICES]
         client = genai.Client(api_key=key)
         books, failed, bar = [], [], st.progress(0.0)
         for i, f in enumerate(pdfs):
@@ -166,7 +195,7 @@ with tab_mail:
 
     if st.button("Rewrite with AI (Gemini)", disabled=not facts):
         from google import genai
-        key = os.getenv("GEMINI_API_KEY")
+        key = get_secret("GEMINI_API_KEY")
         if not key:
             st.info(NO_KEY_MESSAGE)
         else:
