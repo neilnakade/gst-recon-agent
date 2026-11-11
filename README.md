@@ -126,7 +126,7 @@ src/gst_agent/
 
 ## Roadmap
 
-- Real GSTR-2B file support (JSON/Excel) and testing on anonymized real files
+- - Testing the GSTR-2B reader (JSON, Excel, CSV) on real anonymized files
 - Test on real photographed invoices
 - Fuzzy matching for mistyped invoice numbers; supplier-name clean-up by GSTIN
 - Send emails after an explicit human approval step
