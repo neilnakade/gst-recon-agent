@@ -86,7 +86,7 @@ def get_uploaded() -> tuple[list[dict], list[dict]]:
         st.info("Uploading your own files is locked in the public demo. Enter the pilot password in the sidebar.")
         st.stop()
     pdfs = st.file_uploader("Purchase invoices (PDF)", type="pdf", accept_multiple_files=True)
-    portal_file = st.file_uploader("GSTR-2B data (JSON)", type="json")
+    portal_file = st.file_uploader("GSTR-2B data (JSON, Excel .xlsx or CSV)", type=["json", "xlsx", "csv"])
     st.caption("Extraction waits a few seconds per invoice to respect free-tier limits.")
 
     if st.button("Extract invoices", disabled=not pdfs):
@@ -122,8 +122,8 @@ def get_uploaded() -> tuple[list[dict], list[dict]]:
         st.info("Upload invoice PDFs and a GSTR-2B JSON file, then click 'Extract invoices'.")
         st.stop()
     try:
-        portal, info = gstr2b.parse_any(json.load(portal_file))
-    except (ValueError, json.JSONDecodeError) as e:
+        portal, info = gstr2b.parse_bytes(portal_file.getvalue(), portal_file.name)
+    except (ValueError, KeyError, json.JSONDecodeError) as e:
         st.error(f"Could not read the GSTR-2B file: {e}")
         st.stop()
     if info:

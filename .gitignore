@@ -7,3 +7,4 @@ data/recon_result.json
 output/
 data/hard/
 data/scanned/
+*anonymized*.json
