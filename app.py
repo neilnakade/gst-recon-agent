@@ -44,8 +44,8 @@ def ai_allowed() -> bool:
 
 MAX_INVOICES = int(get_secret("MAX_INVOICES") or 30)  # protects the API quota in a shared pilot
 
-NO_KEY_MESSAGE = ("This feature is switched off in the public demo, which has no AI key. "
-                  "Run the app on your own computer with a free Gemini key in a .env file to use it.")
+NO_KEY_MESSAGE = ("No Gemini API key is available. Paste a key in the sidebar, or run the app on your own "
+                  "computer with a key in a .env file. (The public demo has no key.)")
 
 LABEL_TO_FILL = {report.STATUS_LABEL[k]: v for k, v in report.STATUS_FILL.items()}
 
@@ -55,6 +55,15 @@ mode = st.sidebar.radio("Data", ["Sample data", "Upload my own"])
 my_gstin = st.sidebar.text_input("Your own GSTIN (optional)", "",
                                  help="Lets the safety net catch invoices where your details were read as the supplier's.")
 st.sidebar.caption("Sample data = the fake invoices made by synthetic.py. No real client data.")
+user_key = st.sidebar.text_input("Your Gemini API key (optional)", type="password",
+                                 help="Used only for this session and never saved by the app.")
+with st.sidebar.expander("Privacy: where your data goes"):
+    st.markdown(
+        "- Your GSTR-2B file is read by this app only.\n"
+        "- Invoice PDFs (their text or page images) are sent to Google Gemini using the key above.\n"
+        "- The app does not save your files.\n"
+        "- On a hosted copy, files pass through the host's servers. For real client data, run the app on your own computer (see PRIVACY.md).\n"
+        "- A free/unpaid Gemini key lets Google use and review what is sent. For real client data use a billing-enabled (paid) key.")
 if APP_PASSWORD:
     if st.session_state.get("unlocked"):
         st.sidebar.success("Pilot features unlocked")
@@ -91,7 +100,7 @@ def get_uploaded() -> tuple[list[dict], list[dict]]:
 
     if st.button("Extract invoices", disabled=not pdfs):
         from google import genai
-        key = get_secret("GEMINI_API_KEY")
+        key = user_key or get_secret("GEMINI_API_KEY")
         if not key:
             st.info(NO_KEY_MESSAGE)
             st.stop()
@@ -210,7 +219,7 @@ with tab_mail:
         st.caption("AI rewriting is locked in the public demo. Enter the pilot password in the sidebar.")
     if st.button("Rewrite with AI (Gemini)", disabled=not facts or not ai_allowed()):
         from google import genai
-        key = get_secret("GEMINI_API_KEY")
+        key = user_key or get_secret("GEMINI_API_KEY")
         if not key:
             st.info(NO_KEY_MESSAGE)
         else:
