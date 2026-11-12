@@ -44,8 +44,8 @@ def ai_allowed() -> bool:
 
 MAX_INVOICES = int(get_secret("MAX_INVOICES") or 30)  # protects the API quota in a shared pilot
 
-NO_KEY_MESSAGE = ("This feature is switched off in the public demo, which has no AI key. "
-                  "Run the app on your own computer with a free Gemini key in a .env file to use it.")
+NO_KEY_MESSAGE = ("No Gemini API key is available. Paste a key in the sidebar, or run the app on your own "
+                  "computer with a key in a .env file. (The public demo has no key.)")
 
 LABEL_TO_FILL = {report.STATUS_LABEL[k]: v for k, v in report.STATUS_FILL.items()}
 
@@ -55,6 +55,15 @@ mode = st.sidebar.radio("Data", ["Sample data", "Upload my own"])
 my_gstin = st.sidebar.text_input("Your own GSTIN (optional)", "",
                                  help="Lets the safety net catch invoices where your details were read as the supplier's.")
 st.sidebar.caption("Sample data = the fake invoices made by synthetic.py. No real client data.")
+user_key = st.sidebar.text_input("Your Gemini API key (optional)", type="password",
+                                 help="Used only for this session and never saved by the app.")
+with st.sidebar.expander("Privacy: where your data goes"):
+    st.markdown(
+        "- Your GSTR-2B file is read by this app only.\n"
+        "- Invoice PDFs (their text or page images) are sent to Google Gemini using the key above.\n"
+        "- The app does not save your files.\n"
+        "- On a hosted copy, files pass through the host's servers. For real client data, run the app on your own computer (see PRIVACY.md).\n"
+        "- A free/unpaid Gemini key lets Google use and review what is sent. For real client data use a billing-enabled (paid) key.")
 if APP_PASSWORD:
     if st.session_state.get("unlocked"):
         st.sidebar.success("Pilot features unlocked")
@@ -91,7 +100,7 @@ def get_uploaded() -> tuple[list[dict], list[dict]]:
 
     if st.button("Extract invoices", disabled=not pdfs):
         from google import genai
-        key = get_secret("GEMINI_API_KEY")
+        key = user_key or get_secret("GEMINI_API_KEY")
         if not key:
             st.info(NO_KEY_MESSAGE)
             st.stop()
@@ -147,103 +156,3 @@ results, extras = outcome["results"], outcome["extra_in_2b"]
 books_by_no = {b["invoice_no"]: b for b in clean_books}
 
 counts = {k: 0 for k in report.STATUS_LABEL}
-for r in results:
-    counts[r["status"]] += 1
-at_risk = sum(report.tax_of(books_by_no[r["invoice_no"]]) for r in results
-              if r["status"] == "missing_in_2b")
-
-cols = st.columns(7)
-for col, (key, label) in zip(cols, report.STATUS_LABEL.items()):
-    col.metric(label, counts[key])
-cols[4].metric("Extra in 2B", len(extras))
-cols[5].metric("Needs review", len(review))
-cols[6].metric("Tax at risk (Rs.)", f"{at_risk:,.0f}")
-
-
-def table(rows: list[dict]) -> None:
-    df = pd.DataFrame([{
-        "Invoice no.": r["invoice_no"], "Supplier": r["supplier_name"],
-        "GSTIN": r["supplier_gstin"], "Status": report.STATUS_LABEL[r["status"]],
-        "What is wrong": report.explain(r)} for r in rows])
-    if df.empty:
-        st.success("Nothing here.")
-        return
-    styled = df.style.apply(
-        lambda row: [f"background-color: #{LABEL_TO_FILL[row['Status']]}; color: black"] * len(row),
-        axis=1)
-    st.dataframe(styled, width="stretch", hide_index=True)
-
-
-tab_all, tab_fu, tab_extra, tab_review, tab_mail, tab_dl = st.tabs(
-    ["All invoices", "Needs follow-up", "Extra in 2B", "Needs review", "Supplier emails", "Download"])
-
-with tab_review:
-    st.caption("The AI could not read these reliably, so they were NOT matched. "
-               "Check the original invoice and correct the data.")
-    if review:
-        st.dataframe(pd.DataFrame([{"File": r["source"], "Supplier (as read)": r["supplier_name"],
-                                    "Invoice no. (as read)": r["invoice_no"],
-                                    "Why it was set aside": "; ".join(r["reasons"])} for r in review]),
-                     width="stretch", hide_index=True)
-    else:
-        st.success("Nothing needs review.")
-
-with tab_all:
-    table(results)
-with tab_fu:
-    table([r for r in results if r["status"] != "matched"])
-with tab_extra:
-    if review and extras:
-        st.caption("Some of these may belong to invoices that were set aside for review.")
-    if extras:
-        st.dataframe(pd.DataFrame(extras), width="stretch", hide_index=True)
-    else:
-        st.success("Nothing here.")
-
-with tab_mail:
-    facts = emailer.build_facts(results, books_by_no)
-    sig = json.dumps(facts, sort_keys=True) + company
-    drafts = {s: emailer.template_email(s, f, company) for s, f in facts.items()}
-    sources = {s: "template" for s in facts}
-
-    if not ai_allowed():
-        st.caption("AI rewriting is locked in the public demo. Enter the pilot password in the sidebar.")
-    if st.button("Rewrite with AI (Gemini)", disabled=not facts or not ai_allowed()):
-        from google import genai
-        key = get_secret("GEMINI_API_KEY")
-        if not key:
-            st.info(NO_KEY_MESSAGE)
-        else:
-            client, ai = genai.Client(api_key=key), {}
-            with st.spinner("Writing emails..."):
-                for s, f in facts.items():
-                    try:
-                        e = emailer.ai_email(client, s, f, company)
-                        if emailer.passes_guardrail(e, f):
-                            ai[s] = e
-                    except Exception:
-                        pass
-                    time.sleep(8)
-            st.session_state["ai_emails"] = {"sig": sig, "emails": ai}
-
-    saved = st.session_state.get("ai_emails")
-    if saved and saved["sig"] == sig:
-        for s, e in saved["emails"].items():
-            drafts[s], sources[s] = e, "AI, passed fact check"
-
-    if not facts:
-        st.success("No problem invoices, so no emails are needed.")
-    st.caption("These are drafts. Review before sending. Nothing is sent automatically.")
-    for s, e in drafts.items():
-        with st.expander(f"{s} ({len(facts[s]['issues'])} invoice(s), {sources[s]})"):
-            st.text("Subject: " + e["subject"] + "\n\n" + e["body"])
-
-with tab_dl:
-    # A private temp file per run, deleted right away, so two people using the app at the
-    # same time can never overwrite or receive each other's report.
-    tmp = Path(tempfile.gettempdir()) / f"gst_report_{uuid.uuid4().hex}.xlsx"
-    report.build_report(outcome, books_by_no, tmp)
-    report_bytes = tmp.read_bytes()
-    tmp.unlink(missing_ok=True)
-    st.download_button("Download Excel report", report_bytes, file_name="gst_reconciliation_report.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
